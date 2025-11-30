@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
 import os
 import datetime as dt
+from io import BytesIO
 
 import numpy as np
 import pandas as pd
 import streamlit as st
 import joblib
-import gdown
+import requests
 
 # ---------------------------------------------------------
 # CONFIGURACIÓN DE LA PÁGINA
@@ -85,7 +86,7 @@ FEATURE_COLUMNS = [
     "TOTAL DE ARRIBOS EN EL MES_2019",
 ]
 
-# Valores numéricos "típicos" (aprox.) para las variables continuas
+# Valores numéricos "típicos" para las variables continuas
 DEFAULT_NUMERIC_VALUES = {
     "NÚMERO DE ESTABLECIMIENTO_2019": 0.043,
     "NÚMERO DE HABITACIONES_2019": 0.038,
@@ -93,7 +94,7 @@ DEFAULT_NUMERIC_VALUES = {
     "TOTAL DE ARRIBOS EN EL MES_2019": 0.007,
 }
 
-# Listas para los selectbox (las sacamos de FEATURE_COLUMNS)
+# Listas para los selectbox (a partir de FEATURE_COLUMNS)
 DEPARTAMENTOS = sorted(
     [c.replace("DEPARTAMENTO_", "") for c in FEATURE_COLUMNS if c.startswith("DEPARTAMENTO_")]
 )
@@ -102,7 +103,7 @@ SEGMENTOS = sorted(
 )
 
 # ---------------------------------------------------------
-# DESCARGA Y CARGA DEL MODELO
+# DESCARGA Y CARGA DEL MODELO (SIN GDOWN)
 # ---------------------------------------------------------
 MODEL_FILE = "modelo_rf_ocupabilidad.pkl"
 MODEL_ID = "11DGwFoqmqwb1Llex90aJQRfaDv7wPD6n"  # id de tu archivo en Drive
@@ -112,14 +113,17 @@ MODEL_URL = f"https://drive.google.com/uc?id={MODEL_ID}"
 def download_model_if_needed() -> None:
     """Descarga el modelo desde Google Drive si no existe localmente."""
     if not os.path.exists(MODEL_FILE):
-        gdown.download(MODEL_URL, MODEL_FILE, quiet=False)
+        resp = requests.get(MODEL_URL)
+        resp.raise_for_status()
+        with open(MODEL_FILE, "wb") as f:
+            f.write(resp.content)
 
 
 @st.cache_resource(show_spinner="Cargando modelo de ocupabilidad...")
 def load_model():
     download_model_if_needed()
-    model = joblib.load(MODEL_FILE)
-    return model
+    # Cargamos desde archivo local
+    return joblib.load(MODEL_FILE)
 
 
 # ---------------------------------------------------------

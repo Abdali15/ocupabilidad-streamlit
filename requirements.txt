@@ -1,8 +1,6 @@
 streamlit
 pandas
 numpy
-scikit-learn==1.5.2
-joblib
+scikit-learn==1.6.1
 gdown
-requests
-
+joblib

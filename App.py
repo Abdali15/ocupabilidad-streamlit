@@ -1,339 +1,305 @@
-# -*- coding: utf-8 -*-
+# -- coding: utf-8 --
 import os
 import datetime as dt
 
 import numpy as np
 import pandas as pd
+import streamlit as st
 import joblib
 import requests
-import streamlit as st
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-import pandas.api.types as ptypes
 
-# --------------------------------------------------------
-# Configuración de la página
-# --------------------------------------------------------
+# ---------------------------------------------------------
+# CONFIGURACIÓN DE LA PÁGINA
+# ---------------------------------------------------------
 st.set_page_config(
-    page_title="Planificador de ocupación hotelera - Perú",
-    layout="wide"
+    page_title="Ocupación hotelera en el Perú",
+    page_icon="🏨",
+    layout="wide",
 )
 
-# Fecha y hora actual (desde la PC/servidor donde corre la app)
-now = dt.datetime.now()
-now_str = now.strftime("%d/%m/%Y %H:%M:%S")
+# ---------------------------------------------------------
+# COLUMNAS USADAS EN EL ENTRENAMIENTO DEL MODELO
+# ---------------------------------------------------------
+FEATURE_COLUMNS = [
+    "DEPARTAMENTO_APURÍMAC",
+    "DEPARTAMENTO_AREQUIPA",
+    "DEPARTAMENTO_AYACUCHO",
+    "DEPARTAMENTO_CAJAMARCA",
+    "DEPARTAMENTO_CALLAO",
+    "DEPARTAMENTO_CUSCO",
+    "DEPARTAMENTO_HUANCAVELICA",
+    "DEPARTAMENTO_HUÁNUCO",
+    "DEPARTAMENTO_ICA",
+    "DEPARTAMENTO_JUNÍN",
+    "DEPARTAMENTO_LA LIBERTAD",
+    "DEPARTAMENTO_LAMBAYEQUE",
+    "DEPARTAMENTO_LIMA",
+    "DEPARTAMENTO_LORETO",
+    "DEPARTAMENTO_MADRE DE DIOS",
+    "DEPARTAMENTO_MOQUEGUA",
+    "DEPARTAMENTO_PASCO",
+    "DEPARTAMENTO_PIURA",
+    "DEPARTAMENTO_PUNO",
+    "DEPARTAMENTO_SAN MARTÍN",
+    "DEPARTAMENTO_TACNA",
+    "DEPARTAMENTO_TUMBES",
+    "DEPARTAMENTO_UCAYALI",
+    "DEPARTAMENTO_ÁNCASH",
+    "segmento_hotel_ALBERGUE TODAS CONSOLIDADAS",
+    "segmento_hotel_APART HOTEL 3 ESTRELLAS",
+    "segmento_hotel_APART HOTEL 4 ESTRELLAS",
+    "segmento_hotel_APART HOTEL 5 ESTRELLAS",
+    "segmento_hotel_APART HOTEL TODAS CONSOLIDADAS",
+    "segmento_hotel_ECOLODGE ECOLODGE",
+    "segmento_hotel_ECOLODGE TODAS CONSOLIDADAS",
+    "segmento_hotel_HOSTAL 1 ESTRELLA",
+    "segmento_hotel_HOSTAL 2 ESTRELLAS",
+    "segmento_hotel_HOSTAL 3 ESTRELLAS",
+    "segmento_hotel_HOSTAL TODAS CONSOLIDADAS",
+    "segmento_hotel_HOTEL 1 ESTRELLA",
+    "segmento_hotel_HOTEL 2 ESTRELLAS",
+    "segmento_hotel_HOTEL 3 ESTRELLAS",
+    "segmento_hotel_HOTEL 4 ESTRELLAS",
+    "segmento_hotel_HOTEL 5 ESTRELLAS",
+    "segmento_hotel_HOTEL TODAS CONSOLIDADAS",
+    "segmento_hotel_NO CLASIFICADO NO CATEGORIZADO",
+    "segmento_hotel_NO CLASIFICADO TODAS CONSOLIDADAS",
+    "segmento_hotel_NO DISPONIBLE NO DISPONIBLE",
+    "segmento_hotel_RESORT 3 ESTRELLAS",
+    "segmento_hotel_RESORT 4 ESTRELLAS",
+    "segmento_hotel_RESORT 5 ESTRELLAS",
+    "segmento_hotel_RESORT TODAS CONSOLIDADAS",
+    "segmento_hotel_TODAS CONSOLIDADAS 1 ESTRELLA",
+    "segmento_hotel_TODAS CONSOLIDADAS 2 ESTRELLAS",
+    "segmento_hotel_TODAS CONSOLIDADAS 3 ESTRELLAS",
+    "segmento_hotel_TODAS CONSOLIDADAS 4 ESTRELLAS",
+    "segmento_hotel_TODAS CONSOLIDADAS 5 ESTRELLAS",
+    "segmento_hotel_TODAS CONSOLIDADAS ALBERGUE",
+    "segmento_hotel_TODAS CONSOLIDADAS ECOLODGE",
+    "segmento_hotel_TODAS CONSOLIDADAS NO CATEGORIZADO",
+    "segmento_hotel_TODAS CONSOLIDADAS TODAS CONSOLIDADAS",
+    "NÚMERO DE ESTABLECIMIENTO_2019",
+    "NÚMERO DE HABITACIONES_2019",
+    "TOTAL PERNOCT MES - EXT (DÍAS)_2019",
+    "TOTAL DE ARRIBOS EN EL MES_2019",
+]
 
-# Cabecera con fecha/hora a la izquierda y título a la derecha
-col_time, col_title = st.columns([2, 8])
-with col_time:
-    st.markdown(f"📅 **Fecha y hora actual:** {now_str}")
-with col_title:
-    st.title("🧳 Planificador de viaje por ocupación hotelera")
+# Valores numéricos "típicos" para las variables continuas
+DEFAULT_NUMERIC_VALUES = {
+    "NÚMERO DE ESTABLECIMIENTO_2019": 0.043,
+    "NÚMERO DE HABITACIONES_2019": 0.038,
+    "TOTAL PERNOCT MES - EXT (DÍAS)_2019": 0.002,
+    "TOTAL DE ARRIBOS EN EL MES_2019": 0.007,
+}
 
-st.markdown("""
-Selecciona un *departamento del Perú* y la aplicación te mostrará la
-*ocupación hotelera esperada para los próximos 3 meses* (a partir del mes actual).
+# Listas para los selectbox (a partir de FEATURE_COLUMNS)
+DEPARTAMENTOS = sorted(
+    [c.replace("DEPARTAMENTO_", "") for c in FEATURE_COLUMNS if c.startswith("DEPARTAMENTO_")]
+)
+SEGMENTOS = sorted(
+    [c.replace("segmento_hotel_", "") for c in FEATURE_COLUMNS if c.startswith("segmento_hotel_")]
+)
 
-Además, indicará *en cuál de esos meses es más probable que haya mayor afluencia de visitantes*
-y explicará el motivo (festividades y/o temporada turística).
-""")
-
-# --------------------------------------------------------
-# IDs / URLs de archivos en Google Drive
-# --------------------------------------------------------
-DATA_ID = "1pyXp26KqJQtXTqrBZ-igSKFG-NRmQefm"          # Preparado.pickle
-MODEL_ID = "11DGwFoqmqwb1Llex90aJQRfaDv7wPD6n"         # modelo_rf_ocupabilidad.pkl
-
-DATA_URL = f"https://drive.google.com/uc?id={DATA_ID}"
+# ---------------------------------------------------------
+# DESCARGA Y CARGA DEL MODELO (SIN GDOWN)
+# ---------------------------------------------------------
+MODEL_FILE = "modelo_rf_ocupabilidad.pkl"
+MODEL_ID = "11DGwFoqmqwb1Llex90aJQRfaDv7wPD6n"  # id de tu archivo en Drive
 MODEL_URL = f"https://drive.google.com/uc?id={MODEL_ID}"
 
-DATA_PATH = "Preparado.pickle"
-MODEL_PATH = "modelo_rf_ocupabilidad.pkl"
+
+def download_model_if_needed() -> None:
+    """Descarga el modelo desde Google Drive si no existe localmente."""
+    if not os.path.exists(MODEL_FILE):
+        resp = requests.get(MODEL_URL)
+        resp.raise_for_status()
+        with open(MODEL_FILE, "wb") as f:
+            f.write(resp.content)
 
 
-def download_file_if_needed(url: str, local_path: str) -> None:
-    """Descarga un archivo desde Google Drive solo si no existe localmente."""
-    if os.path.exists(local_path):
-        return
-    resp = requests.get(url)
-    resp.raise_for_status()
-    with open(local_path, "wb") as f:
-        f.write(resp.content)
-
-
-# --------------------------------------------------------
-# Carga de datos y modelo (con caché)
-# --------------------------------------------------------
-@st.cache_data(show_spinner="Cargando datos históricos...")
-def load_data() -> pd.DataFrame:
-    download_file_if_needed(DATA_URL, DATA_PATH)
-    return pd.read_pickle(DATA_PATH)
-
-
-@st.cache_resource(show_spinner="Cargando modelo de ocupación...")
+@st.cache_resource(show_spinner="Cargando modelo de ocupabilidad...")
 def load_model():
-    download_file_if_needed(MODEL_URL, MODEL_PATH)
-    return joblib.load(MODEL_PATH)
+    download_model_if_needed()
+    return joblib.load(MODEL_FILE)
 
 
-# --------------------------------------------------------
-# Intentamos cargar df + modelo
-# --------------------------------------------------------
-try:
-    df = load_data()
-    model = load_model()
-except Exception as e:
-    st.error(f"Ocurrió un problema al cargar los datos o el modelo: {e}")
-    st.stop()
+# ---------------------------------------------------------
+# FUNCIONES AUXILIARES
+# ---------------------------------------------------------
+def crear_vector_caracteristicas(departamento: str, segmento: str) -> pd.DataFrame:
+    """Vector con todas las columnas que espera el modelo."""
+    X = pd.DataFrame(np.zeros((1, len(FEATURE_COLUMNS))), columns=FEATURE_COLUMNS, dtype=float)
 
-if "target_ocupabilidad" not in df.columns:
-    st.error("El DataFrame no tiene la columna target_ocupabilidad. Revisa Preparado.pickle.")
-    st.write("Columnas disponibles:", list(df.columns))
-    st.stop()
+    # One-hot del departamento
+    dept_col = f"DEPARTAMENTO_{departamento}"
+    if dept_col in X.columns:
+        X.at[0, dept_col] = 1.0
 
-# --------------------------------------------------------
-# Preparar X, y y predicciones
-# --------------------------------------------------------
-X = df.drop(columns=["target_ocupabilidad"])
-y = df["target_ocupabilidad"]
+    # One-hot del segmento hotelero
+    seg_col = f"segmento_hotel_{segmento}"
+    if seg_col in X.columns:
+        X.at[0, seg_col] = 1.0
 
-df["prediccion"] = model.predict(X)
+    # Variables numéricas con valores por defecto
+    for col, val in DEFAULT_NUMERIC_VALUES.items():
+        if col in X.columns:
+            X.at[0, col] = float(val)
 
-# Métricas globales (por si las usas en el informe)
-mae = mean_absolute_error(y, df["prediccion"])
-rmse = np.sqrt(mean_squared_error(y, df["prediccion"]))
-r2 = r2_score(y, df["prediccion"])
-
-# --------------------------------------------------------
-# Reconstruir DEPARTAMENTO desde one-hot (DEPARTAMENTO_...)
-# --------------------------------------------------------
-dept_cols = [c for c in X.columns if c.startswith("DEPARTAMENTO_")]
-
-if dept_cols:
-    dept_matrix = X[dept_cols].values
-    idx_max = dept_matrix.argmax(axis=1)
-    dept_names = np.array([c.replace("DEPARTAMENTO_", "") for c in dept_cols])
-    df["DEPARTAMENTO"] = dept_names[idx_max]
-else:
-    df["DEPARTAMENTO"] = "No disponible"
-
-# Detectar posible columna de mes en tu preparado
-possible_month_cols = [c for c in df.columns if c.upper() in ["MES", "MES_NUM", "MES_NOMBRE"]]
-MES_COL = possible_month_cols[0] if possible_month_cols else None
-
-# Lista de meses (nombres y números)
-MESES_NOMBRES = [
-    "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
-    "Julio", "Agosto", "Setiembre", "Octubre", "Noviembre", "Diciembre"
-]
-MAPA_MES_A_NUM = {nombre: i + 1 for i, nombre in enumerate(MESES_NOMBRES)}
-MAPA_NUM_A_MES = {i + 1: nombre for i, nombre in enumerate(MESES_NOMBRES)}
-
-# Mes actual del usuario (según la PC)
-MES_NUM_ACTUAL = now.month
-MES_NOMBRE_ACTUAL = MAPA_NUM_A_MES[MES_NUM_ACTUAL]
-
-# Próximos 3 meses (por número y nombre)
-MESES_SIG_NUM = [((MES_NUM_ACTUAL - 1 + i) % 12) + 1 for i in range(1, 4)]
-MESES_SIG_NOMBRES = [MAPA_NUM_A_MES[m] for m in MESES_SIG_NUM]
-
-# --------------------------------------------------------
-# Clasificación de ocupación (baja / media / alta, por percentiles)
-# --------------------------------------------------------
-q1, q2 = df["prediccion"].quantile([0.33, 0.66])
+    return X
 
 
-def clasificar_ocupacion(valor):
-    if valor <= q1:
-        return "Baja ocupación (poco transitado)", "✅"
-    elif valor <= q2:
-        return "Ocupación media (actividad moderada)", "🟡"
-    else:
-        return "Alta ocupación (muy transitado)", "🔴"
-
-
-# --------------------------------------------------------
-# Catálogo de festividades por departamento
-# --------------------------------------------------------
-FESTIVIDADES = {
-    "CUSCO": [
-        {"Mes": "Junio", "Fecha": "24 de junio", "Evento": "Inti Raymi (Fiesta del Sol)"},
-        {"Mes": "Junio", "Fecha": "Mediados de junio (jueves de Corpus Christi)", "Evento": "Corpus Christi en Cusco"},
-        {"Mes": "Julio", "Fecha": "15 al 18 de julio", "Evento": "Fiesta de la Virgen del Carmen en Paucartambo"},
-    ],
-    "LIMA": [
-        {"Mes": "Julio", "Fecha": "28 y 29 de julio", "Evento": "Fiestas Patrias y desfiles cívicos"},
-        {"Mes": "Octubre", "Fecha": "18, 19 y 28 de octubre", "Evento": "Procesiones del Señor de los Milagros"},
-    ],
-    "AREQUIPA": [
-        {"Mes": "Mayo", "Fecha": "1 de mayo", "Evento": "Peregrinación a la Virgen de Chapi"},
-        {"Mes": "Agosto", "Fecha": "15 de agosto", "Evento": "Aniversario de Arequipa"},
-    ],
-    "PUNO": [
-        {"Mes": "Febrero", "Fecha": "Primera quincena de febrero", "Evento": "Festividad de la Virgen de la Candelaria"},
-    ],
-    "LA LIBERTAD": [
-        {"Mes": "Setiembre", "Fecha": "Tercera semana de setiembre", "Evento": "Festival Internacional de la Primavera (Trujillo)"},
-    ],
-    "PIURA": [
-        {"Mes": "Enero", "Fecha": "Verano (enero-febrero)", "Evento": "Alta afluencia a playas como Máncora y Vichayito"},
-        {"Mes": "Octubre", "Fecha": "13 al 19 de octubre", "Evento": "Fiesta del Señor Cautivo de Ayabaca"},
-    ],
-    "LORETO": [
-        {"Mes": "Junio", "Fecha": "24 de junio", "Evento": "Fiesta de San Juan en la Amazonía peruana"},
-    ],
-    "JUNIN": [
-        {"Mes": "Febrero", "Fecha": "Segunda quincena de febrero", "Evento": "Carnavales en el Valle del Mantaro"},
-        {"Mes": "Marzo", "Fecha": "Inicios de marzo", "Evento": "Fiestas costumbristas y continuaciones de carnaval"},
-    ],
+MESES_ES = {
+    1: "enero",
+    2: "febrero",
+    3: "marzo",
+    4: "abril",
+    5: "mayo",
+    6: "junio",
+    7: "julio",
+    8: "agosto",
+    9: "septiembre",
+    10: "octubre",
+    11: "noviembre",
+    12: "diciembre",
 }
 
 
-def obtener_festividades_depto_mes(depto, mes_nombre):
-    fest_depto = FESTIVIDADES.get(depto.upper(), [])
-    fest_mes = [f for f in fest_depto if f["Mes"].lower() == mes_nombre.lower()]
-    return fest_depto, fest_mes
+def proximo_tres_meses():
+    hoy = dt.date.today()
+    meses = []
+    for i in range(3):
+        m = (hoy.month - 1 + i) % 12 + 1
+        y = hoy.year + (hoy.month - 1 + i) // 12
+        meses.append((m, y))
+    return meses
 
 
-def factores_temporada(mes_nombre):
-    mes_lower = mes_nombre.lower()
-    razones = []
-    score = 0.0
-
-    if mes_lower in ["enero", "febrero", "marzo"]:
-        score += 1.5
-        razones.append("es plena temporada de verano y vacaciones escolares")
-    elif mes_lower in ["julio", "agosto"]:
-        score += 1.0
-        razones.append("coincide con las vacaciones de medio año y Fiestas Patrias")
-    elif mes_lower in ["noviembre", "diciembre"]:
-        score += 1.0
-        razones.append("se acerca fin de año, cuando suelen aumentar los viajes familiares y de ocio")
-
-    return score, razones
+def factor_estacional(mes: int) -> float:
+    """Factor simple para simular alta / media / baja temporada."""
+    if mes in (7, 8, 12):      # alta
+        return 1.15
+    if mes in (1, 3, 6):       # media
+        return 1.05
+    return 0.95                # baja
 
 
-def puntuar_mes(depto, mes_num):
-    mes_nombre = MAPA_NUM_A_MES[mes_num]
-    _, fest_mes = obtener_festividades_depto_mes(depto, mes_nombre)
+def tipo_temporada(mes: int) -> str:
+    if mes in (7, 8, 12):
+        return "Alta"
+    if mes in (1, 3, 6):
+        return "Media"
+    return "Baja"
 
-    score = 0.0
-    razones = []
 
-    if fest_mes:
-        score += 2.0
-        razones.append(
-            "se celebran festividades como "
-            + ", ".join(f["Evento"] for f in fest_mes)
+def razon_mes(mes: int) -> str:
+    if mes == 7:
+        return "Fiestas Patrias y vacaciones de medio año."
+    if mes == 8:
+        return "Continuación de las vacaciones de medio año."
+    if mes == 12:
+        return "Fiestas de fin de año y vacaciones largas."
+    if mes in (1, 3, 6):
+        return "Temporada media con flujo turístico moderado."
+    return "Flujo turístico relativamente menor frente a otros meses."
+
+
+# ---------------------------------------------------------
+# INTERFAZ (MISMO ESTILO, UNA SOLA TABLA)
+# ---------------------------------------------------------
+
+# Sidebar
+st.sidebar.title("Parámetros de consulta")
+
+departamento = st.sidebar.selectbox(
+    "Departamento del Perú",
+    DEPARTAMENTOS,
+    index=DEPARTAMENTOS.index("LIMA") if "LIMA" in DEPARTAMENTOS else 0,
+)
+
+segmento = st.sidebar.selectbox(
+    "Segmento hotelero",
+    SEGMENTOS,
+)
+
+st.sidebar.markdown("---")
+st.sidebar.caption(
+    "La aplicación utiliza un modelo de Random Forest entrenado con datos históricos "
+    "de ocupación hotelera a nivel nacional."
+)
+
+calcular = st.sidebar.button("Calcular ocupación para los próximos 3 meses")
+
+# Cuerpo principal
+st.title("Ocupación hotelera esperada")
+
+st.write(
+    """
+Esta herramienta estima la *ocupación hotelera* para los próximos *3 meses*
+según el *departamento* y el *segmento de establecimiento* seleccionados.
+
+A partir de los datos históricos, el modelo proyecta la cantidad aproximada
+de visitantes/pernoctaciones y resalta el mes con *mayor afluencia*.
+"""
+)
+
+modelo = load_model()
+
+if calcular:
+    X = crear_vector_caracteristicas(departamento, segmento)
+    pred_base = float(modelo.predict(X)[0])
+
+    meses = proximo_tres_meses()
+    registros = []
+
+    for mes, anio in meses:
+        factor = factor_estacional(mes)
+        pred_mes = pred_base * factor
+        registros.append(
+            {
+                "Mes": MESES_ES[mes].capitalize(),
+                "Año": anio,
+                "Tipo de temporada": tipo_temporada(mes),
+                "Ocupación esperada (visitantes)": round(pred_mes),
+                "Comentario": razon_mes(mes),
+            }
         )
 
-    s_temp, razones_temp = factores_temporada(mes_nombre)
-    score += s_temp
-    razones.extend(razones_temp)
+    df_resultados = pd.DataFrame(registros)
 
-    return score, mes_nombre, fest_mes, razones
+    # Mes con mayor ocupación
+    idx_max = df_resultados["Ocupación esperada (visitantes)"].idxmax()
+    mejor_fila = df_resultados.loc[idx_max]
 
+    col1, col2 = st.columns([1, 2])
 
-def construir_explicacion_global(depto, nivel_texto, porcentaje, meses_nombres):
-    lista_meses = ", ".join(meses_nombres)
-    base = (
-        f"Para *{depto}*, considerando los próximos tres meses ({lista_meses}), "
-        f"se estima un nivel de ocupación promedio que se sitúa aproximadamente por encima del "
-        f"**{porcentaje:.1f}%** de los niveles históricos observados para el destino, "
-        f"lo que se clasifica globalmente como *{nivel_texto.lower()}*."
-    )
-    return base
+    with col1:
+        st.subheader("Resumen")
+        st.metric(
+            label="Mes con mayor ocupación esperada",
+            value=f"{mejor_fila['Mes']} {mejor_fila['Año']}",
+            delta=f"{int(mejor_fila['Ocupación esperada (visitantes)']):,} visitantes",
+        )
+        st.write(
+            f"*Departamento:* {departamento.title()}  \n"
+            f"*Segmento:* {segmento}"
+        )
 
+    with col2:
+        st.subheader("Detalle de los próximos 3 meses")
+        # ÚNICA TABLA (como en tu captura)
+        st.dataframe(df_resultados, use_container_width=True, hide_index=True)
 
-# --------------------------------------------------------
-# UI: selección de departamento
-# --------------------------------------------------------
-st.subheader("✈ Elige tu destino")
-
-if "DEPARTAMENTO" not in df.columns or df["DEPARTAMENTO"].nunique() <= 1:
-    st.error("No se pudo reconstruir correctamente la columna DEPARTAMENTO.")
-    st.stop()
-
-departamentos = sorted(df["DEPARTAMENTO"].unique())
-depto_sel = st.selectbox("¿A qué departamento quieres ir?", departamentos)
-
-st.markdown("---")
-
-# --------------------------------------------------------
-# Filtrar datos para el departamento y meses futuros
-# --------------------------------------------------------
-df_depto = df[df["DEPARTAMENTO"] == depto_sel].copy()
-
-if MES_COL is not None:
-    serie_mes = df[MES_COL]
-    if ptypes.is_numeric_dtype(serie_mes):
-        subset_future = df[
-            (df["DEPARTAMENTO"] == depto_sel)
-            & (serie_mes.isin(MESES_SIG_NUM))
-        ].copy()
-    else:
-        subset_future = df[
-            (df["DEPARTAMENTO"] == depto_sel)
-            & (serie_mes.astype(str).str.title().isin(MESES_SIG_NOMBRES))
-        ].copy()
-else:
-    subset_future = df_depto.copy()
-
-# Si no hay datos específicos para esos meses, usamos todo el histórico del depto
-if subset_future.empty:
-    subset_future = df_depto.copy()
-
-ocup_promedio = subset_future["prediccion"].mean()
-
-# --------------------------------------------------------
-# Porcentaje como percentil histórico
-# --------------------------------------------------------
-percentile = (df["prediccion"] <= ocup_promedio).mean() * 100
-porcentaje = round(percentile, 1)
-
-nivel_texto_global, icono_global = clasificar_ocupacion(ocup_promedio)
-
-# --------------------------------------------------------
-# Determinar mes más probable de mayor tránsito
-# --------------------------------------------------------
-scores = []
-for mes_num in MESES_SIG_NUM:
-    score, mes_nombre, fest_mes, razones = puntuar_mes(depto_sel, mes_num)
-    scores.append((score, mes_num, mes_nombre, fest_mes, razones))
-
-score_top, mes_top_num, mes_top_nombre, fest_top, razones_top = max(
-    scores, key=lambda x: x[0]
-)
-
-if score_top == 0:
-    razon_top = (
-        "no se identifican festividades importantes ni temporadas altas muy marcadas, "
-        "pero el destino mantiene un flujo turístico relativamente estable."
+    st.caption(
+        "Los valores son estimaciones aproximadas generadas por el modelo; "
+        "no representan cifras oficiales."
     )
 else:
-    razon_top = " y ".join(razones_top)
+    st.info(
+        "Selecciona los parámetros en la barra lateral y pulsa "
+        "*“Calcular ocupación para los próximos 3 meses”*."
+    )
 
-lista_meses_texto = ", ".join(MESES_SIG_NOMBRES)
-explicacion_global = construir_explicacion_global(
-    depto_sel, nivel_texto_global, porcentaje, MESES_SIG_NOMBRES
-)
-explicacion_mes_top = (
-    f"Entre estos meses ({lista_meses_texto}), "
-    f"el mes con mayor probabilidad de estar más transitado es *{mes_top_nombre}*, "
-    f"porque {razon_top}."
-)
 
-# --------------------------------------------------------
-# Mostrar predicción global para los próximos 3 meses
-# --------------------------------------------------------
-st.subheader(f"📅 Pronóstico de ocupación para los próximos 3 meses en {depto_sel}")
-st.caption(f"(A partir del mes actual: *{MES_NOMBRE_ACTUAL}*)")
-
-col_m1, col_m2 = st.columns(2)
-with col_m1:
-    st.markdown(f"### {icono_global} {nivel_texto_global}")
-    st.metric("Ocupación esperada promedio (escala del modelo)", f"{ocup_promedio:,.2f}")
-with col_m2:
-    st.metric("Nivel promedio vs históric
 
 
 

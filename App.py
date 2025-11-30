@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 import os
 import datetime as dt
-from io import BytesIO
 
 import numpy as np
 import pandas as pd
@@ -13,9 +12,9 @@ import requests
 # CONFIGURACIÓN DE LA PÁGINA
 # ---------------------------------------------------------
 st.set_page_config(
-    page_title="Ocupación hotelera",
+    page_title="Ocupación hotelera en el Perú",
     page_icon="🏨",
-    layout="centered",
+    layout="wide",
 )
 
 # ---------------------------------------------------------
@@ -122,7 +121,6 @@ def download_model_if_needed() -> None:
 @st.cache_resource(show_spinner="Cargando modelo de ocupabilidad...")
 def load_model():
     download_model_if_needed()
-    # Cargamos desde archivo local
     return joblib.load(MODEL_FILE)
 
 
@@ -192,77 +190,128 @@ def factor_estacional(mes: int) -> float:
     return 0.95
 
 
+def tipo_temporada(mes: int) -> str:
+    if mes in (7, 8, 12):
+        return "Alta"
+    if mes in (1, 3, 6):
+        return "Media"
+    return "Baja"
+
+
 def razon_mes(mes: int) -> str:
     if mes == 7:
-        return "por Fiestas Patrias y las vacaciones de medio año."
+        return "Fiestas Patrias y vacaciones de medio año."
     if mes == 8:
-        return "por la continuación de las vacaciones de medio año."
+        return "continuación de las vacaciones de medio año."
     if mes == 12:
-        return "por las fiestas de fin de año y vacaciones largas."
+        return "fiestas de fin de año y vacaciones largas."
     if mes in (1, 3, 6):
-        return "por tratarse de una temporada media con flujo turístico moderado."
-    return "porque se espera un flujo turístico relativamente menor frente a los otros meses."
+        return "temporada media con flujo turístico moderado."
+    return "flujo turístico relativamente menor frente a otros meses."
 
 
 # ---------------------------------------------------------
-# INTERFAZ DE USUARIO
+# INTERFAZ (ESTILO PARECIDO AL CÓDIGO ANTIGUO)
 # ---------------------------------------------------------
-st.title("hotelera")
+
+# --- SIDEBAR ---
+st.sidebar.title("Parámetros de consulta")
+
+departamento = st.sidebar.selectbox(
+    "Departamento del Perú",
+    DEPARTAMENTOS,
+    index=DEPARTAMENTOS.index("LIMA") if "LIMA" in DEPARTAMENTOS else 0,
+)
+
+segmento = st.sidebar.selectbox(
+    "Segmento hotelero",
+    SEGMENTOS,
+)
+
+st.sidebar.markdown("---")
+st.sidebar.caption(
+    "La aplicación utiliza un modelo de Random Forest entrenado con datos históricos "
+    "de ocupación hotelera a nivel nacional."
+)
+
+# Botón de ejecutar en el sidebar (como en varios ejemplos de clase)
+calcular = st.sidebar.button("Calcular ocupación para los próximos 3 meses")
+
+# --- CUERPO PRINCIPAL ---
+st.title("Ocupación hotelera esperada")
 
 st.write(
     """
-Selecciona un **departamento del Perú** y un **segmento hotelero**, 
-y la aplicación te mostrará la **ocupación hotelera esperada para los próximos 3 meses** 
-(a partir del mes actual).
+Esta herramienta estima la **ocupación hotelera** para los próximos **3 meses**
+según el **departamento** y el **segmento de establecimiento** seleccionados.
 
-Además, indicará **en cuál de esos meses habría mayor afluencia de visitantes** 
-y explicará brevemente el motivo.
+A partir de los datos históricos, el modelo proyecta la cantidad aproximada
+de visitantes/pernoctaciones y resalta el mes con **mayor afluencia**.
 """
 )
 
 modelo = load_model()
 
-with st.form("form_ocupabilidad"):
-    departamento = st.selectbox("Departamento del Perú", DEPARTAMENTOS, index=DEPARTAMENTOS.index("LIMA"))
-    segmento = st.selectbox("Segmento de hotel", SEGMENTOS)
-
-    submitted = st.form_submit_button("Calcular ocupación esperada")
-
-if submitted:
+if calcular:
     # Crear vector de características
     X = crear_vector_caracteristicas(departamento, segmento)
 
-    # Predicción base
+    # Predicción base (valor "promedio" que luego ajustamos con un factor estacional)
     pred_base = float(modelo.predict(X)[0])
 
     meses = proximo_tres_meses()
-    resultados = []
+    registros = []
 
     for mes, anio in meses:
         factor = factor_estacional(mes)
         pred_mes = pred_base * factor
-        resultados.append((mes, anio, pred_mes))
-
-    # Mostrar resultados
-    st.subheader("Ocupación hotelera esperada (visitantes / pernoctaciones)")
-
-    for mes, anio, valor in resultados:
-        st.write(
-            f"- **{MESES_ES[mes].capitalize()} {anio}**: {valor:,.0f} visitantes (aprox.)"
+        registros.append(
+            {
+                "Mes": MESES_ES[mes].capitalize(),
+                "Año": anio,
+                "Tipo de temporada": tipo_temporada(mes),
+                "Ocupación esperada (visitantes)": round(pred_mes),
+                "Comentario": razon_mes(mes),
+            }
         )
 
-    # Mes con mayor ocupación
-    mejor_mes, mejor_anio, mejor_valor = max(resultados, key=lambda x: x[2])
+    df_resultados = pd.DataFrame(registros)
 
-    st.success(
-        f"El mes con **mayor afluencia esperada** es **{MESES_ES[mejor_mes].capitalize()} {mejor_anio}**, "
-        f"con aproximadamente **{mejor_valor:,.0f} visitantes**, {razon_mes(mejor_mes)}"
+    # Mes con mayor ocupación
+    idx_max = df_resultados["Ocupación esperada (visitantes)"].idxmax()
+    mejor_fila = df_resultados.loc[idx_max]
+
+    col1, col2 = st.columns([1, 2])
+
+    with col1:
+        st.subheader("Resumen")
+        st.metric(
+            label="Mes con mayor ocupación esperada",
+            value=f"{mejor_fila['Mes']} {mejor_fila['Año']}",
+            delta=f"{int(mejor_fila['Ocupación esperada (visitantes)']):,} visitantes",
+        )
+        st.write(
+            f"**Departamento:** {departamento.title()}  \n"
+            f"**Segmento:** {segmento}"
+        )
+
+    with col2:
+        st.subheader("Detalle de los próximos 3 meses")
+        st.dataframe(df_resultados, use_container_width=True, hide_index=True)
+
+    st.subheader("Tabla explicativa")
+    st.table(
+        df_resultados[["Mes", "Año", "Tipo de temporada", "Comentario"]].reset_index(drop=True)
     )
 
     st.caption(
-        "Nota: Los valores mostrados son estimaciones basadas en el modelo de Random Forest entrenado "
-        "con datos históricos de ocupación hotelera en el Perú."
+        "Los valores son estimaciones aproximadas generadas por el modelo; "
+        "no representan cifras oficiales."
     )
+else:
+    st.info("Selecciona los parámetros en la barra lateral y pulsa **“Calcular ocupación para los próximos 3 meses”**.")
+
+
 
 
 
